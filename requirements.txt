@@ -1,0 +1,4 @@
+streamlit
+mcp
+google-cloud-bigquery
+httpx
