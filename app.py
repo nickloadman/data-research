@@ -23,10 +23,13 @@ perplexity_params = StdioServerParameters(
     env={"PERPLEXITY_API_KEY": st.secrets["PERPLEXITY_API_KEY"]}
 )
 
-bq_params = StdioServerParameters(
+bbq_params = StdioServerParameters(
     command="python",
-    args=["-m", "mcp_bigquery_server"], 
-    env={"GOOGLE_APPLICATION_CREDENTIALS": get_google_creds_path()}
+    args=["-m", "mcp_server_bigquery"], 
+    env={
+        "GOOGLE_APPLICATION_CREDENTIALS": get_google_creds_path(),
+        "BIGQUERY_PROJECT": "apac-sandbox"  # Add this to help the server find your project
+    }
 )
 
 async def run_data_workflow(prompt):

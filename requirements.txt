@@ -1,4 +1,4 @@
 streamlit
 mcp
+mcp-server-bigquery
 google-cloud-bigquery
-httpx
