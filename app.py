@@ -7,31 +7,22 @@ import sys
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-# 1. Page Configuration
-st.set_page_config(page_title="Data Research", layout="wide", page_icon="🔍")
+st.set_page_config(page_title="Data Research App", layout="wide")
 
-# --- HELPER: Handle Google Credentials ---
+# --- CREDENTIALS ---
 def setup_credentials():
     if "gcp_service_account" in st.secrets:
-        try:
-            creds_dict = dict(st.secrets["gcp_service_account"])
-            creds_path = os.path.join(os.getcwd(), "google_creds.json")
-            with open(creds_path, "w") as f:
-                json.dump(creds_dict, f)
-            return creds_path
-        except Exception as e:
-            st.error(f"Secret Parsing Error: {e}")
+        creds_path = os.path.join(os.getcwd(), "google_creds.json")
+        with open(creds_path, "w") as f:
+            json.dump(dict(st.secrets["gcp_service_account"]), f)
+        return creds_path
     return None
 
-# --- MCP CONFIGURATION ---
+# --- MCP CONFIG ---
 perplexity_params = StdioServerParameters(
     command="npx",
     args=["-y", "@perplexity-ai/mcp-server"],
-    env={
-        "PERPLEXITY_API_KEY": st.secrets.get("PERPLEXITY_API_KEY", ""),
-        "PATH": os.environ.get("PATH", ""),
-        "HOME": "/tmp"
-    }
+    env={"PERPLEXITY_API_KEY": st.secrets.get("PERPLEXITY_API_KEY", ""), "HOME": "/tmp"}
 )
 
 toolbox_path = shutil.which("toolbox") or "toolbox"
@@ -44,62 +35,56 @@ bq_params = StdioServerParameters(
     }
 )
 
-async def run_research_workflow(prompt):
+# --- HELPER TO EXTRACT TEXT ---
+def parse_mcp_result(result):
+    """MCP tools return a list of content blocks. This extracts the text."""
+    if not result or not hasattr(result, 'content'):
+        return "No data returned."
+    
+    # Join all text blocks found in the result
+    texts = [block.text for block in result.content if hasattr(block, 'text')]
+    return "\n".join(texts) if texts else "Empty content blocks."
+
+async def run_workflow(prompt):
     try:
         async with stdio_client(perplexity_params) as (r1, w1), \
                    stdio_client(bq_params) as (r2, w2):
             
             pplx = ClientSession(r1, w1)
             bq = ClientSession(r2, w2)
-            
             await pplx.initialize()
             await bq.initialize()
 
-            # Step 1: Web Search
-            st.info("🛰️ Perplexity is fetching web context...")
-            web_results = await pplx.call_tool("perplexity_search", {"query": prompt})
+            # Step 1: Perplexity Search
+            web_raw = await pplx.call_tool("perplexity_search", {"query": prompt})
+            web_text = parse_mcp_result(web_raw)
             
             # Step 2: BigQuery Insights
-            st.info("📊 BigQuery Official MCP is analyzing...")
-            bq_results = await bq.call_tool("ask_data_insights", {
-                "query": f"Context: {web_results}. Question: {prompt}"
+            # Using the extracted text from Perplexity as context
+            bq_raw = await bq.call_tool("ask_data_insights", {
+                "query": f"Using this web context: {web_text}. Question: {prompt}"
             })
+            bq_text = parse_mcp_result(bq_raw)
             
-            return web_results, bq_results
-                
+            return web_text, bq_text
     except Exception as e:
-        st.error(f"Workflow Exception: {str(e)}")
-        return None, None
+        return f"Error: {e}", None
 
-# --- USER INTERFACE ---
+# --- UI ---
 st.title("🔍 Data Research App")
-
-user_query = st.text_input("What is your research question?")
+query = st.text_input("What is your research question?")
 
 if st.button("Run Research"):
-    if user_query:
-        # Using a status container for better visibility
-        with st.status("Executing Antigravity Workflow...", expanded=True) as status:
-            web, data = asyncio.run(asyncio.wait_for(run_research_workflow(user_query), timeout=120.0))
-            status.update(label="Workflow Complete!", state="complete", expanded=False)
+    if query:
+        with st.status("Executing Research Workflow...") as status:
+            res_web, res_bq = asyncio.run(run_workflow(query))
+            status.update(label="Workflow Complete!", state="complete")
             
-        # DISPLAY RESULTS
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("🌐 Web Context (Perplexity)")
-            if web:
-                # Force show the raw content if st.write is empty
-                st.write(web)
-                with st.expander("View Raw JSON"):
-                    st.json(web)
-            else:
-                st.warning("Web results came back empty.")
-        
+            st.markdown(res_web)
+            
         with col2:
             st.subheader("📊 Data Insights (BigQuery)")
-            if data:
-                st.write(data)
-                with st.expander("View Raw JSON"):
-                    st.json(data)
-            else:
-                st.warning("BigQuery insights came back empty.")
+            st.markdown(res_bq)
