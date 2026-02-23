@@ -21,17 +21,19 @@ def get_google_creds_path():
         return None
 
 # --- MCP CONFIGURATION ---
+# Ensure PERPLEXITY_API_KEY is in your Streamlit Secrets
 perplexity_params = StdioServerParameters(
     command="npx",
     args=["-y", "@perplexity-ai/mcp-server"],
     env={"PERPLEXITY_API_KEY": st.secrets["PERPLEXITY_API_KEY"]}
 )
 
+# Using the community BigQuery MCP server
 bq_params = StdioServerParameters(
     command="python",
     args=["-m", "mcp_server_bigquery"], 
     env={
-        "GOOGLE_APPLICATION_CREDENTIALS": get_google_creds_path(),
+        "GOOGLE_APPLICATION_CREDENTIALS": get_google_creds_path() or "",
         "BIGQUERY_PROJECT": "apac-sandbox"
     }
 )
@@ -48,12 +50,14 @@ async def run_data_workflow(prompt):
             await bq_session.initialize()
 
             # Step 1: Web Search via Perplexity
+            # Standard tool name: 'perplexity_search'
             search_results = await pplx_session.call_tool(
                 "perplexity_search", 
                 {"query": prompt}
             )
             
             # Step 2: Query BigQuery
+            # Standard tool name for this server: 'execute_query'
             sql_query = "SELECT CURRENT_DATE() as today, 'Connection Successful' as status"
             bq_results = await bq_session.call_tool(
                 "execute_query", 
@@ -63,31 +67,40 @@ async def run_data_workflow(prompt):
             return search_results, bq_results
 
     except Exception as e:
-        # This handles the specific error if a server fails to start
-        return f"Error: {str(e)}", None
+        return f"Workflow Error: {str(e)}", None
 
 # --- USER INTERFACE ---
 st.title("🔍 Data Research App")
-user_query = st.text_input("Enter your research topic:")
+st.markdown("Querying **Perplexity** (Web) and **BigQuery** (Internal) simultaneously.")
+
+user_query = st.text_input("Enter your research topic:", placeholder="e.g. Latest trends in AI")
 
 if st.button("Generate Combined Insight"):
     if not user_query:
         st.warning("Please enter a query first.")
     else:
-        with st.spinner("Connecting to Perplexity & BigQuery..."):
+        with st.spinner("Connecting to MCP Servers..."):
             try:
-                # Use a timeout so it doesn't spin forever
+                # 60-second timeout to prevent the app from hanging
                 res_web, res_bq = asyncio.run(asyncio.wait_for(run_data_workflow(user_query), timeout=60.0))
                 
-                if res_web:
-                    st.subheader("🌐 Web Context (Perplexity)")
-                    st.write(res_web)
+                col1, col2 = st.columns(2)
                 
-                if res_bq:
+                with col1:
+                    st.subheader("🌐 Web Context (Perplexity)")
+                    if res_web:
+                        st.write(res_web)
+                    else:
+                        st.info("No web results returned.")
+                
+                with col2:
                     st.subheader("📊 BigQuery Data")
-                    st.write(res_bq)
-                    
+                    if res_bq:
+                        st.write(res_bq)
+                    else:
+                        st.info("No BigQuery results returned.")
+                        
             except asyncio.TimeoutError:
-                st.error("The request timed out. MCP servers may be taking too long to wake up.")
+                st.error("The request timed out. MCP servers took too long to respond.")
             except Exception as e:
                 st.error(f"An unexpected error occurred: {e}")
