@@ -5,102 +5,72 @@ import os
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-# Page Config
-st.set_page_config(page_title="Data Research", layout="wide", page_icon="🔍")
+st.set_page_config(page_title="Data Research", layout="wide")
 
-# --- HELPER: Handle Google Credentials ---
-def get_google_creds_path():
+# --- CREDENTIALS HANDLER ---
+def setup_credentials():
     try:
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        creds_path = os.path.join(os.getcwd(), "google_creds.json")
-        with open(creds_path, "w") as f:
-            json.dump(creds_dict, f)
-        return creds_path
+        if "gcp_service_account" in st.secrets:
+            creds_path = os.path.join(os.getcwd(), "google_creds.json")
+            with open(creds_path, "w") as f:
+                json.dump(dict(st.secrets["gcp_service_account"]), f)
+            return creds_path
     except Exception as e:
-        st.error(f"Failed to process GCP credentials: {e}")
-        return None
+        st.error(f"Secret Error: {e}")
+    return None
 
-# --- MCP CONFIGURATION ---
-# Ensure PERPLEXITY_API_KEY is in your Streamlit Secrets
+# --- MCP CONFIG ---
 perplexity_params = StdioServerParameters(
     command="npx",
     args=["-y", "@perplexity-ai/mcp-server"],
-    env={"PERPLEXITY_API_KEY": st.secrets["PERPLEXITY_API_KEY"]}
+    env={"PERPLEXITY_API_KEY": st.secrets.get("PERPLEXITY_API_KEY", "")}
 )
 
-# Using the community BigQuery MCP server
 bq_params = StdioServerParameters(
     command="python",
     args=["-m", "mcp_server_bigquery"], 
     env={
-        "GOOGLE_APPLICATION_CREDENTIALS": get_google_creds_path() or "",
+        "GOOGLE_APPLICATION_CREDENTIALS": setup_credentials() or "",
         "BIGQUERY_PROJECT": "apac-sandbox"
     }
 )
 
-async def run_data_workflow(prompt):
+async def run_research(prompt):
     try:
-        async with stdio_client(perplexity_params) as (read1, write1), \
-                   stdio_client(bq_params) as (read2, write2):
+        # We start with Perplexity first to verify connection
+        async with stdio_client(perplexity_params) as (read_pplx, write_pplx):
+            pplx = ClientSession(read_pplx, write_pplx)
+            await pplx.initialize()
+            web_data = await pplx.call_tool("perplexity_search", {"query": prompt})
             
-            pplx_session = ClientSession(read1, write1)
-            bq_session = ClientSession(read2, write2)
-            
-            await pplx_session.initialize()
-            await bq_session.initialize()
-
-            # Step 1: Web Search via Perplexity
-            # Standard tool name: 'perplexity_search'
-            search_results = await pplx_session.call_tool(
-                "perplexity_search", 
-                {"query": prompt}
-            )
-            
-            # Step 2: Query BigQuery
-            # Standard tool name for this server: 'execute_query'
-            sql_query = "SELECT CURRENT_DATE() as today, 'Connection Successful' as status"
-            bq_results = await bq_session.call_tool(
-                "execute_query", 
-                {"sql": sql_query}
-            )
-            
-            return search_results, bq_results
-
-    except Exception as e:
-        return f"Workflow Error: {str(e)}", None
-
-# --- USER INTERFACE ---
-st.title("🔍 Data Research App")
-st.markdown("Querying **Perplexity** (Web) and **BigQuery** (Internal) simultaneously.")
-
-user_query = st.text_input("Enter your research topic:", placeholder="e.g. Latest trends in AI")
-
-if st.button("Generate Combined Insight"):
-    if not user_query:
-        st.warning("Please enter a query first.")
-    else:
-        with st.spinner("Connecting to MCP Servers..."):
+            # Now try BigQuery
             try:
-                # 60-second timeout to prevent the app from hanging
-                res_web, res_bq = asyncio.run(asyncio.wait_for(run_data_workflow(user_query), timeout=60.0))
+                async with stdio_client(bq_params) as (read_bq, write_bq):
+                    bq = ClientSession(read_bq, write_bq)
+                    await bq.initialize()
+                    # Note: LucasHild's server often uses 'execute-query' (dash) 
+                    # but let's try 'execute_query' (underscore) first
+                    bq_data = await bq.call_tool("execute-query", {"sql": "SELECT CURRENT_DATE()"})
+                    return web_data, bq_data
+            except Exception as bq_err:
+                return web_data, f"BigQuery Error: {bq_err}"
                 
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.subheader("🌐 Web Context (Perplexity)")
-                    if res_web:
-                        st.write(res_web)
-                    else:
-                        st.info("No web results returned.")
-                
-                with col2:
-                    st.subheader("📊 BigQuery Data")
-                    if res_bq:
-                        st.write(res_bq)
-                    else:
-                        st.info("No BigQuery results returned.")
-                        
-            except asyncio.TimeoutError:
-                st.error("The request timed out. MCP servers took too long to respond.")
-            except Exception as e:
-                st.error(f"An unexpected error occurred: {e}")
+    except Exception as e:
+        return f"Primary Error: {e}", None
+
+# --- UI ---
+st.title("🔍 Data Research")
+query = st.text_input("What are we researching?")
+
+if st.button("Run Research"):
+    if query:
+        with st.spinner("Talking to Perplexity and BigQuery..."):
+            res_web, res_bq = asyncio.run(run_research(query))
+            
+            c1, c2 = st.columns(2)
+            with c1:
+                st.subheader("Web")
+                st.write(res_web)
+            with c2:
+                st.subheader("Data")
+                st.write(res_bq)
