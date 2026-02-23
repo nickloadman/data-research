@@ -20,22 +20,20 @@ def setup_credentials():
                 json.dump(creds_dict, f)
             return creds_path
         except Exception as e:
-            st.error(f"Credential Setup Error: {e}")
+            st.error(f"Secret Parsing Error: {e}")
     return None
 
 # --- MCP CONFIGURATION ---
-# 1. Perplexity (We use a more direct npx call)
 perplexity_params = StdioServerParameters(
     command="npx",
     args=["-y", "@perplexity-ai/mcp-server"],
     env={
         "PERPLEXITY_API_KEY": st.secrets.get("PERPLEXITY_API_KEY", ""),
         "PATH": os.environ.get("PATH", ""),
-        "HOME": "/tmp" # Some npx packages need a writable home dir
+        "HOME": "/tmp"
     }
 )
 
-# 2. Official Google BigQuery
 toolbox_path = shutil.which("toolbox") or "toolbox"
 bq_params = StdioServerParameters(
     command=toolbox_path,
@@ -47,31 +45,30 @@ bq_params = StdioServerParameters(
 )
 
 async def run_research_workflow(prompt):
-    # We use a try block for each to find the specific "sub-exception"
     try:
-        async with stdio_client(perplexity_params) as (r1, w1):
-            pplx = ClientSession(r1, w1)
-            await pplx.initialize()
+        async with stdio_client(perplexity_params) as (r1, w1), \
+                   stdio_client(bq_params) as (r2, w2):
             
-            async with stdio_client(bq_params) as (r2, w2):
-                bq = ClientSession(r2, w2)
-                await bq.initialize()
+            pplx = ClientSession(r1, w1)
+            bq = ClientSession(r2, w2)
+            
+            await pplx.initialize()
+            await bq.initialize()
 
-                # Step 1: Web Search
-                st.write("🛰️ Perplexity search initiated...")
-                web_results = await pplx.call_tool("perplexity_search", {"query": prompt})
-                
-                # Step 2: BigQuery Insights
-                st.write("📊 BigQuery analysis initiated...")
-                bq_results = await bq.call_tool("ask_data_insights", {
-                    "query": f"Context: {web_results}. Question: {prompt}"
-                })
-                
-                return web_results, bq_results
+            # Step 1: Web Search
+            st.info("🛰️ Perplexity is fetching web context...")
+            web_results = await pplx.call_tool("perplexity_search", {"query": prompt})
+            
+            # Step 2: BigQuery Insights
+            st.info("📊 BigQuery Official MCP is analyzing...")
+            bq_results = await bq.call_tool("ask_data_insights", {
+                "query": f"Context: {web_results}. Question: {prompt}"
+            })
+            
+            return web_results, bq_results
                 
     except Exception as e:
-        # This will now tell you EXACTLY what failed
-        st.error(f"Specific Error: {str(e)}")
+        st.error(f"Workflow Exception: {str(e)}")
         return None, None
 
 # --- USER INTERFACE ---
@@ -79,16 +76,30 @@ st.title("🔍 Data Research App")
 
 user_query = st.text_input("What is your research question?")
 
-if st.button("Run"):
+if st.button("Run Research"):
     if user_query:
-        with st.spinner("Executing Workflow..."):
-            web, data = asyncio.run(run_research_workflow(user_query))
+        # Using a status container for better visibility
+        with st.status("Executing Antigravity Workflow...", expanded=True) as status:
+            web, data = asyncio.run(asyncio.wait_for(run_research_workflow(user_query), timeout=120.0))
+            status.update(label="Workflow Complete!", state="complete", expanded=False)
             
-            if web or data:
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.subheader("🌐 Web Context")
-                    st.write(web)
-                with col2:
-                    st.subheader("📊 Data Insights")
-                    st.write(data)
+        # DISPLAY RESULTS
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("🌐 Web Context (Perplexity)")
+            if web:
+                # Force show the raw content if st.write is empty
+                st.write(web)
+                with st.expander("View Raw JSON"):
+                    st.json(web)
+            else:
+                st.warning("Web results came back empty.")
+        
+        with col2:
+            st.subheader("📊 Data Insights (BigQuery)")
+            if data:
+                st.write(data)
+                with st.expander("View Raw JSON"):
+                    st.json(data)
+            else:
+                st.warning("BigQuery insights came back empty.")
