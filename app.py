@@ -33,18 +33,19 @@ bbq_params = StdioServerParameters(
 )
 
 async def run_data_workflow(prompt):
+    # TEMPORARILY TEST ONLY ONE AT A TIME
     try:
-        async with stdio_client(perplexity_params) as (read1, write1), \
-                   stdio_client(bq_params) as (read2, write2):
-            
+        async with stdio_client(perplexity_params) as (read1, write1):
             pplx_session = ClientSession(read1, write1)
-            bq_session = ClientSession(read2, write2)
-            
             await pplx_session.initialize()
-            await bq_session.initialize()
-
+            st.success("Perplexity Connected!")
+            
             # Step 1: Search for context via Perplexity
             search_results = await pplx_session.call_tool("perplexity_search", {"query": prompt})
+            return search_results, "BQ skipped for testing"
+    except Exception as e:
+        st.error(f"Initialization failed: {e}")
+        return None, None
             
             # Step 2: Query BigQuery (Placeholder SQL - adjust as needed)
             bq_results = await bq_session.call_tool("execute_query", {"sql": "SELECT CURRENT_DATE()"})
