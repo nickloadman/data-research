@@ -5,69 +5,54 @@ import os
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-st.set_page_config(page_title="Data Research", layout="wide")
+# Page Config
+st.set_page_config(page_title="Data Research", layout="wide", page_icon="🔍")
 
-# --- HELPER: Handle Google Credentials in the Cloud ---
+# --- HELPER: Handle Google Credentials ---
 def get_google_creds_path():
-    # This pulls the dictionary we will paste into Streamlit Secrets later
-    creds_dict = dict(st.secrets["gcp_service_account"])
-    creds_path = os.path.join(os.getcwd(), "google_creds.json")
-    with open(creds_path, "w") as f:
-        json.dump(creds_dict, f)
-    return creds_path
+    """Extracts GCP credentials from Streamlit Secrets and writes to a temp file."""
+    try:
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        # Use a path that works in Streamlit Cloud's Linux environment
+        creds_path = os.path.join(os.getcwd(), "google_creds.json")
+        with open(creds_path, "w") as f:
+            json.dump(creds_dict, f)
+        return creds_path
+    except Exception as e:
+        st.error(f"Failed to process GCP credentials: {e}")
+        return None
 
-# 1. Setup MCP Server Parameters
+# --- MCP CONFIGURATION ---
+# Perplexity uses npx (requires nodejs in packages.txt)
 perplexity_params = StdioServerParameters(
     command="npx",
     args=["-y", "@perplexity-ai/mcp-server"],
     env={"PERPLEXITY_API_KEY": st.secrets["PERPLEXITY_API_KEY"]}
 )
 
-bbq_params = StdioServerParameters(
+# BigQuery uses the community python server
+bq_params = StdioServerParameters(
     command="python",
     args=["-m", "mcp_server_bigquery"], 
     env={
         "GOOGLE_APPLICATION_CREDENTIALS": get_google_creds_path(),
-        "BIGQUERY_PROJECT": "apac-sandbox"  # Add this to help the server find your project
+        "BIGQUERY_PROJECT": "apac-sandbox"
     }
 )
 
 async def run_data_workflow(prompt):
-    # TEMPORARILY TEST ONLY ONE AT A TIME
+    """Orchestrates the connection and tool calls for both MCPs."""
     try:
-        async with stdio_client(perplexity_params) as (read1, write1):
+        # Connect to both servers simultaneously
+        async with stdio_client(perplexity_params) as (read1, write1), \
+                   stdio_client(bq_params) as (read2, write2):
+            
             pplx_session = ClientSession(read1, write1)
+            bq_session = ClientSession(read2, write2)
+            
+            # Initialize both sessions
             await pplx_session.initialize()
-            st.success("Perplexity Connected!")
-            
-            # Step 1: Search for context via Perplexity
-            search_results = await pplx_session.call_tool("perplexity_search", {"query": prompt})
-            return search_results, "BQ skipped for testing"
-    except Exception as e:
-        st.error(f"Initialization failed: {e}")
-        return None, None
-            
-            # Step 2: Query BigQuery (Placeholder SQL - adjust as needed)
-            bq_results = await bq_session.call_tool("execute_query", {"sql": "SELECT CURRENT_DATE()"})
-            
-            return search_results, bq_results
-    except Exception as e:
-        st.error(f"Connection Error: {str(e)}")
-        return None, None
+            await bq_session.initialize()
 
-st.title("🔍 Data Research App")
-user_query = st.text_input("What data should we research today?")
-
-if st.button("Generate Insight"):
-    if user_query:
-        with st.spinner("Syncing with Perplexity and BigQuery..."):
-            res1, res2 = asyncio.run(run_data_workflow(user_query))
-            
-            if res1 and res2:
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.subheader("Web Context (Perplexity)")
-                    st.write(res1)
-                with col2:
-                    st.subheader("Internal Data (BigQuery)")
-                    st.write(res2)
+            # Step 1: Web Search via Perplexity
+            # Tool name is
