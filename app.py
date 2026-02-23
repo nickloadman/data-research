@@ -20,24 +20,23 @@ def setup_credentials():
                 json.dump(creds_dict, f)
             return creds_path
         except Exception as e:
-            st.error(f"Secret Parsing Error: {e}")
+            st.error(f"Credential Setup Error: {e}")
     return None
 
 # --- MCP CONFIGURATION ---
-# 1. Perplexity MCP
-# We use 'npx -y' to force it to run without asking for permission
+# 1. Perplexity (We use a more direct npx call)
 perplexity_params = StdioServerParameters(
     command="npx",
     args=["-y", "@perplexity-ai/mcp-server"],
     env={
         "PERPLEXITY_API_KEY": st.secrets.get("PERPLEXITY_API_KEY", ""),
-        "PATH": os.environ.get("PATH", "") # Ensures it finds node/npm
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": "/tmp" # Some npx packages need a writable home dir
     }
 )
 
-# 2. Official Google BigQuery MCP
+# 2. Official Google BigQuery
 toolbox_path = shutil.which("toolbox") or "toolbox"
-
 bq_params = StdioServerParameters(
     command=toolbox_path,
     args=["--prebuilt", "bigquery", "--stdio"],
@@ -48,31 +47,32 @@ bq_params = StdioServerParameters(
 )
 
 async def run_research_workflow(prompt):
+    # We use a try block for each to find the specific "sub-exception"
     try:
-        # Initialize connections
-        async with stdio_client(perplexity_params) as (r1, w1), \
-                   stdio_client(bq_params) as (r2, w2):
-            
+        async with stdio_client(perplexity_params) as (r1, w1):
             pplx = ClientSession(r1, w1)
-            bq = ClientSession(r2, w2)
-            
             await pplx.initialize()
-            await bq.initialize()
+            
+            async with stdio_client(bq_params) as (r2, w2):
+                bq = ClientSession(r2, w2)
+                await bq.initialize()
 
-            # Step 1: Perplexity Search
-            # Official tool name is 'perplexity_search'
-            st.write("🛰️ Perplexity is thinking...")
-            web_results = await pplx.call_tool("perplexity_search", {"query": prompt})
-            
-            # Step 2: BigQuery Official Tool
-            st.write("📊 BigQuery is analyzing...")
-            bq_results = await bq.call_tool("ask_data_insights", {
-                "query": f"Using this web info: {web_results}. Question: {prompt}"
-            })
-            
-            return web_results, bq_results
+                # Step 1: Web Search
+                st.write("🛰️ Perplexity search initiated...")
+                web_results = await pplx.call_tool("perplexity_search", {"query": prompt})
+                
+                # Step 2: BigQuery Insights
+                st.write("📊 BigQuery analysis initiated...")
+                bq_results = await bq.call_tool("ask_data_insights", {
+                    "query": f"Context: {web_results}. Question: {prompt}"
+                })
+                
+                return web_results, bq_results
+                
     except Exception as e:
-        return f"Workflow Error: {str(e)}", None
+        # This will now tell you EXACTLY what failed
+        st.error(f"Specific Error: {str(e)}")
+        return None, None
 
 # --- USER INTERFACE ---
 st.title("🔍 Data Research App")
@@ -84,10 +84,11 @@ if st.button("Run"):
         with st.spinner("Executing Workflow..."):
             web, data = asyncio.run(run_research_workflow(user_query))
             
-            col1, col2 = st.columns(2)
-            with col1:
-                st.subheader("🌐 Web Context")
-                st.write(web)
-            with col2:
-                st.subheader("📊 Data Insights")
-                st.write(data)
+            if web or data:
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.subheader("🌐 Web Context")
+                    st.write(web)
+                with col2:
+                    st.subheader("📊 Data Insights")
+                    st.write(data)
