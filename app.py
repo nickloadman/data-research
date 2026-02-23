@@ -5,72 +5,98 @@ import os
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-st.set_page_config(page_title="Data Research", layout="wide")
+# Page Config
+st.set_page_config(page_title="Data Research", layout="wide", page_icon="🔍")
 
-# --- CREDENTIALS HANDLER ---
-def setup_credentials():
-    if "gcp_service_account" in st.secrets:
-        creds_path = os.path.join(os.getcwd(), "google_creds.json")
-        with open(creds_path, "w") as f:
-            json.dump(dict(st.secrets["gcp_service_account"]), f)
-        return creds_path
+# --- HELPER: Handle Google Credentials ---
+def get_google_creds_path():
+    try:
+        if "gcp_service_account" in st.secrets:
+            creds_dict = dict(st.secrets["gcp_service_account"])
+            creds_path = os.path.join(os.getcwd(), "google_creds.json")
+            with open(creds_path, "w") as f:
+                json.dump(creds_dict, f)
+            return creds_path
+    except Exception as e:
+        st.error(f"Credential Setup Error: {e}")
     return None
 
-# --- OFFICIAL MCP CONFIG ---
-# Perplexity stays the same
+# --- MCP CONFIGURATION ---
+# 1. Perplexity (Node.js/npx)
 perplexity_params = StdioServerParameters(
     command="npx",
     args=["-y", "@perplexity-ai/mcp-server"],
     env={"PERPLEXITY_API_KEY": st.secrets.get("PERPLEXITY_API_KEY", "")}
 )
 
-# Official BigQuery MCP via Toolbox
-# This uses the 'toolbox' command to launch the prebuilt suite
+# 2. Official Google BigQuery (Toolbox)
+# Note: command="toolbox" works once toolbox-core is in requirements.txt
 bq_params = StdioServerParameters(
-    command="python",
-    args=["-m", "toolbox_core", "--prebuilt", "bigquery", "--stdio"], 
+    command="toolbox",
+    args=["--prebuilt", "bigquery", "--stdio"],
     env={
-        "GOOGLE_APPLICATION_CREDENTIALS": setup_credentials() or "",
+        "GOOGLE_APPLICATION_CREDENTIALS": get_google_creds_path() or "",
         "BIGQUERY_PROJECT": "apac-sandbox"
     }
 )
 
-async def run_official_workflow(prompt):
+async def run_data_workflow(prompt):
     try:
-        async with stdio_client(perplexity_params) as (r1, w1), \
-                   stdio_client(bq_params) as (r2, w2):
+        # Start sessions
+        async with stdio_client(perplexity_params) as (read1, write1), \
+                   stdio_client(bq_params) as (read2, write2):
             
-            pplx = ClientSession(r1, w1)
-            bq = ClientSession(r2, w2)
-            await pplx.initialize()
-            await bq.initialize()
+            pplx_session = ClientSession(read1, write1)
+            bq_session = ClientSession(read2, write2)
+            
+            await pplx_session.initialize()
+            await bq_session.initialize()
 
-            # 1. Web Search
-            web_res = await pplx.call_tool("perplexity_search", {"query": prompt})
+            # Step 1: Web Search via Perplexity
+            st.info("Searching the web via Perplexity...")
+            search_results = await pplx_session.call_tool(
+                "perplexity_search", 
+                {"query": prompt}
+            )
             
-            # 2. Official BQ Tool: ask_data_insights
-            # This is the "Magic" tool that handles the SQL for you!
-            bq_res = await bq.call_tool("ask_data_insights", {
-                "query": f"Using this context: {web_res}, answer the user: {prompt}"
-            })
+            # Step 2: Insight via Official BigQuery Tool
+            st.info("Fetching insights from BigQuery...")
+            # We use 'ask_data_insights' as it's the flagship official tool
+            bq_results = await bq_session.call_tool(
+                "ask_data_insights", 
+                {"query": f"Context: {search_results}. Question: {prompt}"}
+            )
             
-            return web_res, bq_res
+            return search_results, bq_results
+
     except Exception as e:
-        return f"Error: {e}", None
+        return f"Connection Error: {str(e)}", None
 
-# --- UI ---
-st.title("🔍 Data Research (Official BQ MCP)")
-user_input = st.text_input("What is your research question?")
+# --- USER INTERFACE ---
+st.title("🔍 Data Research App")
+st.markdown("Bridge Perplexity and BigQuery to find insights.")
 
-if st.button("Run"):
-    if user_input:
-        with st.spinner("Analyzing with Perplexity and Official BigQuery Tools..."):
-            web, data = asyncio.run(run_official_workflow(user_input))
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.subheader("Web Context")
-                st.write(web)
-            with col2:
-                st.subheader("Data Insights")
-                st.write(data)
+user_query = st.text_input("What would you like to research?", placeholder="e.g. Analysis of sales trends in APAC")
+
+if st.button("Run Research"):
+    if not user_query:
+        st.warning("Please enter a query.")
+    else:
+        with st.spinner("Executing Antigravity Workflow..."):
+            try:
+                # 60s timeout to handle cold starts
+                res_web, res_bq = asyncio.run(asyncio.wait_for(run_data_workflow(user_query), timeout=60.0))
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.subheader("🌐 Web Context")
+                    st.write(res_web)
+                
+                with col2:
+                    st.subheader("📊 BigQuery Insights")
+                    st.write(res_bq)
+                    
+            except asyncio.TimeoutError:
+                st.error("The request timed out. MCP servers may be taking too long to wake up.")
+            except Exception as e:
+                st.error(f"Main App Error: {e}")
