@@ -1,4 +1,4 @@
 streamlit
 mcp
-mcp-server-bigquery
+toolbox-core
 google-cloud-bigquery

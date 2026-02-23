@@ -9,68 +9,68 @@ st.set_page_config(page_title="Data Research", layout="wide")
 
 # --- CREDENTIALS HANDLER ---
 def setup_credentials():
-    try:
-        if "gcp_service_account" in st.secrets:
-            creds_path = os.path.join(os.getcwd(), "google_creds.json")
-            with open(creds_path, "w") as f:
-                json.dump(dict(st.secrets["gcp_service_account"]), f)
-            return creds_path
-    except Exception as e:
-        st.error(f"Secret Error: {e}")
+    if "gcp_service_account" in st.secrets:
+        creds_path = os.path.join(os.getcwd(), "google_creds.json")
+        with open(creds_path, "w") as f:
+            json.dump(dict(st.secrets["gcp_service_account"]), f)
+        return creds_path
     return None
 
-# --- MCP CONFIG ---
+# --- OFFICIAL MCP CONFIG ---
+# Perplexity stays the same
 perplexity_params = StdioServerParameters(
     command="npx",
     args=["-y", "@perplexity-ai/mcp-server"],
     env={"PERPLEXITY_API_KEY": st.secrets.get("PERPLEXITY_API_KEY", "")}
 )
 
+# Official BigQuery MCP via Toolbox
+# This uses the 'toolbox' command to launch the prebuilt suite
 bq_params = StdioServerParameters(
     command="python",
-    args=["-m", "mcp_server_bigquery"], 
+    args=["-m", "toolbox_core", "--prebuilt", "bigquery", "--stdio"], 
     env={
         "GOOGLE_APPLICATION_CREDENTIALS": setup_credentials() or "",
         "BIGQUERY_PROJECT": "apac-sandbox"
     }
 )
 
-async def run_research(prompt):
+async def run_official_workflow(prompt):
     try:
-        # We start with Perplexity first to verify connection
-        async with stdio_client(perplexity_params) as (read_pplx, write_pplx):
-            pplx = ClientSession(read_pplx, write_pplx)
-            await pplx.initialize()
-            web_data = await pplx.call_tool("perplexity_search", {"query": prompt})
+        async with stdio_client(perplexity_params) as (r1, w1), \
+                   stdio_client(bq_params) as (r2, w2):
             
-            # Now try BigQuery
-            try:
-                async with stdio_client(bq_params) as (read_bq, write_bq):
-                    bq = ClientSession(read_bq, write_bq)
-                    await bq.initialize()
-                    # Note: LucasHild's server often uses 'execute-query' (dash) 
-                    # but let's try 'execute_query' (underscore) first
-                    bq_data = await bq.call_tool("execute-query", {"sql": "SELECT CURRENT_DATE()"})
-                    return web_data, bq_data
-            except Exception as bq_err:
-                return web_data, f"BigQuery Error: {bq_err}"
-                
+            pplx = ClientSession(r1, w1)
+            bq = ClientSession(r2, w2)
+            await pplx.initialize()
+            await bq.initialize()
+
+            # 1. Web Search
+            web_res = await pplx.call_tool("perplexity_search", {"query": prompt})
+            
+            # 2. Official BQ Tool: ask_data_insights
+            # This is the "Magic" tool that handles the SQL for you!
+            bq_res = await bq.call_tool("ask_data_insights", {
+                "query": f"Using this context: {web_res}, answer the user: {prompt}"
+            })
+            
+            return web_res, bq_res
     except Exception as e:
-        return f"Primary Error: {e}", None
+        return f"Error: {e}", None
 
 # --- UI ---
-st.title("🔍 Data Research")
-query = st.text_input("What are we researching?")
+st.title("🔍 Data Research (Official BQ MCP)")
+user_input = st.text_input("What is your research question?")
 
-if st.button("Run Research"):
-    if query:
-        with st.spinner("Talking to Perplexity and BigQuery..."):
-            res_web, res_bq = asyncio.run(run_research(query))
+if st.button("Run"):
+    if user_input:
+        with st.spinner("Analyzing with Perplexity and Official BigQuery Tools..."):
+            web, data = asyncio.run(run_official_workflow(user_input))
             
-            c1, c2 = st.columns(2)
-            with c1:
-                st.subheader("Web")
-                st.write(res_web)
-            with c2:
-                st.subheader("Data")
-                st.write(res_bq)
+            col1, col2 = st.columns(2)
+            with col1:
+                st.subheader("Web Context")
+                st.write(web)
+            with col2:
+                st.subheader("Data Insights")
+                st.write(data)
