@@ -24,15 +24,18 @@ def setup_credentials():
     return None
 
 # --- MCP CONFIGURATION ---
-# Use npx for Perplexity (Node.js)
+# 1. Perplexity MCP
+# We use 'npx -y' to force it to run without asking for permission
 perplexity_params = StdioServerParameters(
     command="npx",
     args=["-y", "@perplexity-ai/mcp-server"],
-    env={"PERPLEXITY_API_KEY": st.secrets.get("PERPLEXITY_API_KEY", "")}
+    env={
+        "PERPLEXITY_API_KEY": st.secrets.get("PERPLEXITY_API_KEY", ""),
+        "PATH": os.environ.get("PATH", "") # Ensures it finds node/npm
+    }
 )
 
-# Use toolbox for Official BigQuery MCP
-# We look for the executable on the cloud server
+# 2. Official Google BigQuery MCP
 toolbox_path = shutil.which("toolbox") or "toolbox"
 
 bq_params = StdioServerParameters(
@@ -46,6 +49,7 @@ bq_params = StdioServerParameters(
 
 async def run_research_workflow(prompt):
     try:
+        # Initialize connections
         async with stdio_client(perplexity_params) as (r1, w1), \
                    stdio_client(bq_params) as (r2, w2):
             
@@ -56,13 +60,14 @@ async def run_research_workflow(prompt):
             await bq.initialize()
 
             # Step 1: Perplexity Search
-            st.write("🛰️ Searching Perplexity...")
+            # Official tool name is 'perplexity_search'
+            st.write("🛰️ Perplexity is thinking...")
             web_results = await pplx.call_tool("perplexity_search", {"query": prompt})
             
             # Step 2: BigQuery Official Tool
-            st.write("📊 Fetching Data Insights...")
+            st.write("📊 BigQuery is analyzing...")
             bq_results = await bq.call_tool("ask_data_insights", {
-                "query": f"Using this web info: {web_results}, answer: {prompt}"
+                "query": f"Using this web info: {web_results}. Question: {prompt}"
             })
             
             return web_results, bq_results
@@ -71,13 +76,12 @@ async def run_research_workflow(prompt):
 
 # --- USER INTERFACE ---
 st.title("🔍 Data Research App")
-st.success("App logic loaded. Ready for research.")
 
 user_query = st.text_input("What is your research question?")
 
 if st.button("Run"):
     if user_query:
-        with st.spinner("Processing Antigravity Workflow..."):
+        with st.spinner("Executing Workflow..."):
             web, data = asyncio.run(run_research_workflow(user_query))
             
             col1, col2 = st.columns(2)
