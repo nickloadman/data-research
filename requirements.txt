@@ -1,5 +1,4 @@
 streamlit
 mcp
 toolbox-core
-google-cloud-bigquerytoolbox-core
-mcp
+google-cloud-bigquery
